@@ -27,6 +27,17 @@ export class BinanceSession {
     this.leverage = null;          // levierul curent pe simbolul activ (futures)
     this.opChain = Promise.resolve();  // vezi #serial()
     this.fillWaiters = new Map();  // clientOrderId → {resolve,reject,timer}, vezi #waitFill()
+    this.marginType = null;        // 'ISOLATED' | 'CROSSED' pe simbolul activ (din cont)
+    // Fallback REST (vezi #poll): unele conturi nu primesc NICIUN eveniment pe
+    // user data stream, deci poziția/ordinele/fill-urile le aflăm prin REST.
+    this.lastUserEvent = 0;        // ultimul eveniment primit pe user stream
+    this.userEventSeq = 0;         // incrementat la fiecare ACCOUNT_UPDATE aplicat
+    this.lastOrderActivity = 0;    // ultimul ordin trimis de noi
+    this.lastPoll = 0;
+    this.refreshing = false;
+    this.stopped = false;
+    this.announced = new Set();    // ordine terminale deja anunțate UI-ului (dedup stream ↔ REST)
+    this.timers = new Set();       // timeout-uri programate de #refreshSoon
   }
 
   // ── Pornire: time sync → WS-API → market stream → user stream ──
@@ -79,11 +90,18 @@ export class BinanceSession {
 
     // 5. Snapshot inițial de cont (balanță + poziții), fără să blocăm pornirea.
     this.refreshAccount().catch((e) => console.error('[account]', e.message));
+
+    // 6. Fallback REST pentru conturile fără evenimente pe user stream.
+    this.pollTimer = setInterval(() => this.#poll(), 1000);
   }
 
   stop() {
+    this.stopped = true;
     clearInterval(this.timeTimer);
     clearInterval(this.restPingTimer);
+    clearInterval(this.pollTimer);
+    for (const t of this.timers) clearTimeout(t);
+    this.timers.clear();
     for (const w of this.fillWaiters.values()) clearTimeout(w.timer);
     this.fillWaiters.clear();
     this.wsApi?.close();
@@ -105,6 +123,62 @@ export class BinanceSession {
     });
   }
 
+  // ── Fallback REST: poziție / ordine / fill-uri fără user stream ──
+  // Pe unele conturi (ex. Multi-Assets Mode) Binance nu trimite NICIUN
+  // eveniment pe user data stream. Fără asta, panelul nu și-ar vedea poziția,
+  // fill-urile și ordinele deschise. Cât timp stream-ul tace, le citim prin REST.
+
+  // Reîmprospătare rapidă a contului; nu se suprapune cu una deja în curs.
+  async #quietRefresh() {
+    if (this.refreshing || this.stopped || !this.symbol) return;
+    this.refreshing = true;
+    this.lastPoll = Date.now();
+    try { await this.refreshAccount(); } catch { /* tranzitoriu — următorul poll reîncearcă */ } finally {
+      this.refreshing = false;
+    }
+  }
+
+  // După un ordin trimis: poziția devine vizibilă prin REST cu o mică întârziere.
+  #refreshSoon(delays = [250, 1500]) {
+    for (const d of delays) {
+      const t = setTimeout(() => { this.timers.delete(t); this.#quietRefresh(); }, d);
+      this.timers.add(t);
+    }
+  }
+
+  #poll() {
+    if (this.stopped || !this.symbol || this.refreshing) return;
+    const now = Date.now();
+    const active = Math.abs(this.position.qty) > 1e-12 || this.openOrders.size > 0
+      || this.fillWaiters.size > 0 || now - this.lastOrderActivity < 30_000;
+    const streamAlive = now - this.lastUserEvent < 30_000;
+    // Cu stream viu, REST rămâne doar plasă de siguranță rară. Cu stream mut:
+    // la 3s cât ai poziție/ordine, la 20s când ești flat (modificări externe).
+    const every = active ? (streamAlive ? 30_000 : 3_000) : 20_000;
+    if (now - this.lastPoll >= every) this.#quietRefresh();
+  }
+
+  // Confirmă prin REST statusul unui ordin trimis de noi, dacă user stream-ul
+  // nu l-a anunțat. Se oprește singur când a fost anunțat (stream sau REST).
+  async #confirmViaRest(clientOrderId, symbol, maxMs = 10_000) {
+    const t0 = Date.now();
+    const path = this.isFutures ? '/fapi/v1/order' : '/api/v3/order';
+    for (let i = 0; ; i++) {
+      await new Promise((r) => setTimeout(r, Math.min(200 * 2 ** i, 2000)));
+      if (this.stopped || this.announced.has(clientOrderId)) return;
+      const waiting = this.fillWaiters.has(clientOrderId);   // SL automat așteaptă fill-ul
+      if (!waiting && Date.now() - t0 > maxMs) return;
+      try {
+        const ord = this.#normOrder(await this.rest.signed('GET', path, { symbol, origClientOrderId: clientOrderId }));
+        if (['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(ord.status)) {
+          this.#applyOrderUpdate(ord, ord.avgPrice || ord.price, ord.filled);
+          this.#quietRefresh();
+          return;
+        }
+      } catch { /* "order not found" imediat după trimitere / eroare tranzitorie → reîncercăm */ }
+    }
+  }
+
   #status(which, st) {
     this.status[which] = st;
     this.broadcast({ type: 'status', status: this.status });
@@ -115,16 +189,22 @@ export class BinanceSession {
   // ── Snapshot cont: balanțe + poziție + ordine deschise ──
   async refreshAccount() {
     if (this.isFutures) {
+      const seq = this.userEventSeq;
+      const sym = this.symbol;
       const acc = await this.rest.signed('GET', '/fapi/v2/account');
       this.balances = {};
       for (const a of acc.assets) {
         this.balances[a.asset] = { free: parseFloat(a.availableBalance), total: parseFloat(a.walletBalance) };
       }
-      if (this.symbol) {
-        const p = acc.positions.find((x) => x.symbol === this.symbol);
+      // Dacă între timp a sosit un ACCOUNT_UPDATE (mai nou), snapshot-ul REST
+      // — cerut ÎNAINTE de el — ar suprascrie poziția cu una veche.
+      if (sym && sym === this.symbol && seq === this.userEventSeq) {
+        const p = acc.positions.find((x) => x.symbol === sym);
         this.position = p
           ? { qty: parseFloat(p.positionAmt), entry: parseFloat(p.entryPrice) }
           : { qty: 0, entry: 0 };
+        if (p && typeof p.isolated === 'boolean') this.marginType = p.isolated ? 'ISOLATED' : 'CROSSED';
+        if (p && p.leverage != null && !this.leverage) this.leverage = parseInt(p.leverage, 10) || this.leverage;
       }
     } else {
       const acc = await this.rest.signed('GET', '/api/v3/account');
@@ -149,11 +229,78 @@ export class BinanceSession {
 
   async refreshOpenOrders() {
     if (!this.symbol) return;
+    const sym = this.symbol;
     const path = this.isFutures ? '/fapi/v1/openOrders' : '/api/v3/openOrders';
-    const orders = await this.rest.signed('GET', path, { symbol: this.symbol });
+    // Futures: SL/TP (STOP_MARKET, TAKE_PROFIT_MARKET…) sunt "algo orders" —
+    // nu apar în /openOrders, ci în /openAlgoOrders.
+    const [orders, algo] = await Promise.all([
+      this.rest.signed('GET', path, { symbol: sym }),
+      this.isFutures
+        ? this.rest.signed('GET', '/fapi/v1/openAlgoOrders', { symbol: sym }).catch(() => null)
+        : null,
+    ]);
+    if (sym !== this.symbol) return;             // simbolul s-a schimbat între timp
+    const prev = [...this.openOrders.values()].filter((o) => o.symbol === sym);
     this.openOrders.clear();
     for (const o of orders) this.openOrders.set(String(o.orderId), this.#normOrder(o));
+    const algoList = Array.isArray(algo) ? algo : (algo?.orders || []);
+    for (const a of algoList) {
+      const n = this.#normAlgo(a);
+      this.openOrders.set(n.orderId, n);
+    }
     this.#pushOrders();
+    // Ordine care erau deschise și au dispărut fără ca user stream-ul să ne
+    // spună de ce → aflăm statusul final (fill / anulat) prin REST.
+    for (const o of prev) {
+      if (this.openOrders.has(o.orderId)) continue;
+      if (o.algo && algo === null) continue;     // lista algo n-a putut fi citită — nu știm
+      this.#resolveGone(o);
+    }
+  }
+
+  // Ordin condițional (SL/TP) din Algo Service → același format ca restul.
+  #normAlgo(a) {
+    const s = String(a.algoStatus || a.status || 'NEW').toUpperCase();
+    const status = ['TRIGGERING', 'TRIGGERED', 'FINISHED'].includes(s) ? 'FILLED'
+      : s === 'CANCELLED' ? 'CANCELED' : s;
+    const qty = parseFloat(a.quantity ?? a.origQty ?? 0);
+    return {
+      orderId: `A${a.algoId}`,
+      algoId: a.algoId,
+      algo: true,
+      clientOrderId: a.clientAlgoId,
+      symbol: a.symbol,
+      side: a.side,
+      type: a.orderType || a.type,
+      price: parseFloat(a.price ?? 0),
+      avgPrice: 0,
+      stopPrice: parseFloat(a.triggerPrice ?? a.stopPrice ?? 0),
+      qty,
+      filled: status === 'FILLED' ? qty : 0,
+      status,
+    };
+  }
+
+  async #resolveGone(o) {
+    let ord;
+    try {
+      ord = o.algo
+        ? this.#normAlgo(await this.rest.signed('GET', '/fapi/v1/algoOrder', { algoId: o.algoId }))
+        : this.#normOrder(await this.rest.signed('GET', this.isFutures ? '/fapi/v1/order' : '/api/v3/order',
+          { symbol: o.symbol, orderId: o.orderId }));
+    } catch { return; }                           // nu l-am putut afla — lista rămâne cum e
+    if (this.stopped || o.symbol !== this.symbol) return;
+    if (['NEW', 'PARTIALLY_FILLED'].includes(ord.status)) {
+      // Încă activ: lista REST era în urmă (ordin tocmai trimis). Îl punem la
+      // loc doar în fereastra aia scurtă — altfel ar rămâne "fantomă" în listă.
+      if (Date.now() - this.lastOrderActivity < 5000) {
+        this.openOrders.set(o.orderId, o);
+        this.#pushOrders();
+      }
+      return;
+    }
+    this.#applyOrderUpdate({ ...o, ...ord, orderId: o.orderId }, ord.avgPrice || ord.price || this.ticker?.last || 0, ord.filled);
+    this.#quietRefresh();
   }
 
   #normOrder(o) {
@@ -187,8 +334,12 @@ export class BinanceSession {
   // ── Evenimente din user data stream ──
   #onUserEvent(e) {
     const type = e.e;
+    this.lastUserEvent = Date.now();
     if (this.isFutures) {
-      if (type === 'ORDER_TRADE_UPDATE') {
+      if (type === 'ALGO_UPDATE') {
+        // SL/TP: plasat / declanșat / anulat / respins → relistăm din REST.
+        this.#refreshSoon([100, 1000]);
+      } else if (type === 'ORDER_TRADE_UPDATE') {
         const o = e.o;
         const ord = this.#normOrder({
           orderId: o.i, clientOrderId: o.c, symbol: o.s, side: o.S, type: o.o,
@@ -203,6 +354,7 @@ export class BinanceSession {
         for (const p of e.a?.P || []) {
           if (p.s === this.symbol) {
             this.position = { qty: parseFloat(p.pa), entry: parseFloat(p.ep) };
+            this.userEventSeq++;
           }
         }
         this.#pushAccount();
@@ -240,8 +392,24 @@ export class BinanceSession {
   // Actualizează lista de ordine + notifică UI-ul (fill verde / reject roșu).
   #applyOrderUpdate(ord, lastPrice, lastQty) {
     const done = ['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(ord.status);
-    if (done) this.openOrders.delete(ord.orderId);
-    else this.openOrders.set(ord.orderId, ord);
+    // Același ordin poate fi anunțat și de user stream, și de fallback-ul REST
+    // — UI-ul trebuie să-l vadă o singură dată (un singur toast/sunet de fill).
+    const key = ord.clientOrderId || ord.orderId;
+    if (done) {
+      if (this.announced.has(key)) { this.openOrders.delete(ord.orderId); return; }
+      this.announced.add(key);
+      if (this.announced.size > 500) this.announced.delete(this.announced.values().next().value);
+    }
+    if (done) {
+      this.openOrders.delete(ord.orderId);
+      // SL/TP declanșat: ordinul "copil" care se umple are alt id decât cel
+      // condițional din listă — îl scoatem după clientOrderId, apoi
+      // reîmprospătăm din REST (poziția + restul ordinelor, ex. TP rămas).
+      for (const [k, v] of this.openOrders) {
+        if (v.algo && v.clientOrderId && v.clientOrderId === ord.clientOrderId) this.openOrders.delete(k);
+      }
+      this.#refreshSoon([300]);
+    } else this.openOrders.set(ord.orderId, ord);
     this.#pushOrders();
     this.broadcast({
       type: 'orderUpdate',
@@ -257,7 +425,14 @@ export class BinanceSession {
       this.fillWaiters.delete(ord.clientOrderId);
       clearTimeout(waiter.timer);
       if (ord.status === 'FILLED') waiter.resolve(ord);
-      else waiter.reject(new Error(`Ordinul de intrare a fost ${ord.status}.`));
+      else {
+        // Anulat/respins/expirat de utilizator sau de bursă → nu e o eroare
+        // de SL automat: n-a existat nicio poziție de protejat, iar motivul
+        // (ex. respingerea) a primit deja propriul toast. Fără toast roșu.
+        const err = new Error(`Ordinul de intrare a fost ${ord.status}.`);
+        err.silent = true;
+        waiter.reject(err);
+      }
     }
   }
 
@@ -266,6 +441,8 @@ export class BinanceSession {
     symbol = symbol.toUpperCase();
     this.symbol = symbol;
     this.position = { qty: 0, entry: 0 };
+    this.leverage = null;                 // se citește din cont (refreshAccount) pt. noul simbol
+    this.marginType = null;
     this.triggers.clear();                // trigger-ele erau pentru alt simbol
     this.#pushTriggers();
     await this.#loadFilters(symbol);      // tick size / step size / min notional
@@ -278,14 +455,22 @@ export class BinanceSession {
     // simbol dacă asta eșuează (ex. permisiuni limitate pe cont).
     if (this.isFutures) {
       try {
-        this.leverage = await this.#maxLeverage(symbol);
-        await this.setLeverage(this.leverage);
+        await this.setLeverage(await this.#maxLeverage(symbol));
       } catch (e) {
         console.error('[leverage] auto-max eșuat:', e.message);
       }
     }
 
-    this.broadcast({ type: 'symbol', symbol, filters: this.filters[symbol], leverage: this.leverage });
+    this.broadcast(this.symbolMessage());
+  }
+
+  // Mesajul "symbol" către UI: filtre + levierul și tipul de marjă REALE ale
+  // contului (nu valori presupuse de UI).
+  symbolMessage() {
+    return {
+      type: 'symbol', symbol: this.symbol, filters: this.filters[this.symbol],
+      leverage: this.leverage, marginType: this.marginType,
+    };
   }
 
   // Levierul maxim pe care Binance îl permite CONTULUI TĂU pentru acest
@@ -342,7 +527,9 @@ export class BinanceSession {
   roundQty(qty) {
     const f = this.filters[this.symbol];
     const step = f?.stepSize || 0.000001;
-    const r = Math.floor(qty / step) * step;
+    // + 1e-9: 0.043 / 0.001 = 42.99999999999999 în virgulă mobilă → fără
+    // toleranță, floor() ar tăia un pas întreg (13% din valori greșeau cu 1 pas).
+    const r = Math.floor(qty / step + 1e-9) * step;
     return parseFloat(r.toFixed(f?.qtyPrecision ?? 6));
   }
 
@@ -487,15 +674,36 @@ export class BinanceSession {
     }
     if (this.isFutures && reduceOnly) params.reduceOnly = 'true';
 
-    // Futures: STOP_MARKET/TAKE_PROFIT_MARKET (și celelalte "algo orders") nu
-    // sunt acceptate de order.place pe WS-API (eroare -4120 — "use the Algo
-    // Order API endpoints instead") — Binance le rutează doar prin REST.
+    // Futures: din 2025-12-09 Binance a mutat ordinele condiționale (STOP,
+    // STOP_MARKET, TAKE_PROFIT, TAKE_PROFIT_MARKET, TRAILING_STOP_MARKET) în
+    // "Algo Service": atât order.place pe WS-API, cât și POST /fapi/v1/order
+    // le respinge cu -4120 ("use the Algo Order API endpoints instead").
+    // Singurul drum valid e POST /fapi/v1/algoOrder, cu nume de câmpuri
+    // diferite (triggerPrice, clientAlgoId) și algoType=CONDITIONAL.
     const isFuturesAlgo = this.isFutures
       && ['STOP', 'STOP_MARKET', 'TAKE_PROFIT', 'TAKE_PROFIT_MARKET', 'TRAILING_STOP_MARKET'].includes(type);
-    if (isFuturesAlgo) return this.rest.signed('POST', '/fapi/v1/order', params);
+    this.lastOrderActivity = Date.now();
+    if (isFuturesAlgo) {
+      const algoParams = {
+        algoType: 'CONDITIONAL',
+        symbol: params.symbol, side, type, quantity: params.quantity,
+        triggerPrice: params.stopPrice,
+        clientAlgoId: clientOrderId,
+      };
+      if (params.reduceOnly) algoParams.reduceOnly = params.reduceOnly;
+      if (!clientOrderId) delete algoParams.clientAlgoId;   // URLSearchParams ar trimite "undefined"
+      const res = await this.rest.signed('POST', '/fapi/v1/algoOrder', algoParams);
+      this.#refreshSoon();            // ordinul apare în lista de ordine deschise
+      return res;
+    }
 
     // ★ Restul ordinelor pleacă pe conexiunea WS deja autentificată — latență minimă.
-    return this.wsApi.request('order.place', params);
+    const res = await this.wsApi.request('order.place', params);
+    // Fără user stream, fill-ul și poziția nu ne-ar mai ajunge niciodată:
+    // le confirmăm prin REST (nu face nimic dacă stream-ul a anunțat deja).
+    if (clientOrderId) this.#confirmViaRest(clientOrderId, this.symbol);
+    this.#refreshSoon();
+    return res;
   }
 
   // MARKET instant. Metodele publice (marketOrder/limitOffset/closePercent/
@@ -526,7 +734,7 @@ export class BinanceSession {
     // (ex. Close All) să aștepte și SL-ul automat.
     if (waitFill) {
       await this.#autoSlAfterFill(side, waitFill, autoSl).catch((e) => {
-        this.broadcast({ type: 'autoSlError', message: e.message });
+        if (!e.silent) this.broadcast({ type: 'autoSlError', message: e.message });
       });
     }
     return result;
@@ -584,7 +792,7 @@ export class BinanceSession {
     // se respinge curat prin evenimentul CANCELED, fără SL rămas agățat.
     if (waitFill) {
       this.#autoSlAfterFill(side, waitFill, autoSl).catch((e) => {
-        this.broadcast({ type: 'autoSlError', message: e.message });
+        if (!e.silent) this.broadcast({ type: 'autoSlError', message: e.message });
       });
     }
     return result;
@@ -716,6 +924,11 @@ export class BinanceSession {
 
   // Anulează un ordin individual.
   cancelOrder(orderId) {
+    // SL/TP condiționale (id "A123") nu se anulează pe WS-API, ci prin
+    // DELETE /fapi/v1/algoOrder.
+    if (String(orderId).startsWith('A')) {
+      return this.rest.signed('DELETE', '/fapi/v1/algoOrder', { algoId: String(orderId).slice(1) });
+    }
     return this.wsApi.request('order.cancel', { symbol: this.symbol, orderId: Number(orderId) });
   }
 
@@ -726,7 +939,13 @@ export class BinanceSession {
     if (!this.symbol) return;
     if (this.isFutures) {
       // Futures WS-API nu are cancel-all → REST (operațiune rară, ok).
-      await this.rest.signed('DELETE', '/fapi/v1/allOpenOrders', { symbol: this.symbol });
+      // SL/TP (Algo Service) au cancel-all separat. Dacă cel algo eșuează,
+      // restul rămâne anulat; lista reîmprospătată de mai jos arată ce a rămas.
+      await Promise.all([
+        this.rest.signed('DELETE', '/fapi/v1/allOpenOrders', { symbol: this.symbol }),
+        this.rest.signed('DELETE', '/fapi/v1/algoOpenOrders', { symbol: this.symbol })
+          .catch((e) => console.error('[cancelAll/algo]', e.message)),
+      ]);
     } else {
       await this.wsApi.request('openOrders.cancelAll', { symbol: this.symbol });
     }
@@ -734,6 +953,7 @@ export class BinanceSession {
     this.#pushOrders();
     this.triggers.clear();
     this.#pushTriggers();
+    this.#refreshSoon([300]);          // dacă a rămas ceva (ex. algo eșuat), apare iar în listă
   }
 
   // ★ KILL / Flatten All: anulează tot + închide poziția, în paralel.
@@ -757,15 +977,23 @@ export class BinanceSession {
   // Futures: leverage + margin type.
   async setLeverage(leverage) {
     if (!this.isFutures) throw new Error('Leverage e doar pe Futures.');
-    return this.rest.signed('POST', '/fapi/v1/leverage', { symbol: this.symbol, leverage });
+    const r = await this.rest.signed('POST', '/fapi/v1/leverage', { symbol: this.symbol, leverage });
+    // Binance poate plafona valoarea cerută — păstrăm ce a setat efectiv.
+    this.leverage = parseInt(r?.leverage, 10) || leverage;
+    return r;
   }
 
   async setMarginType(marginType) {
     if (!this.isFutures) throw new Error('Margin type e doar pe Futures.');
     try {
-      return await this.rest.signed('POST', '/fapi/v1/marginType', { symbol: this.symbol, marginType });
+      const r = await this.rest.signed('POST', '/fapi/v1/marginType', { symbol: this.symbol, marginType });
+      this.marginType = marginType;
+      return r;
     } catch (e) {
-      if (e.code === -4046) return { msg: 'Deja setat.' }; // "No need to change margin type"
+      if (e.code === -4046) {                      // "No need to change margin type"
+        this.marginType = marginType;
+        return { msg: 'Deja setat.' };
+      }
       throw e;
     }
   }

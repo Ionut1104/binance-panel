@@ -121,9 +121,12 @@ export default function TradePanel({
           <label>Leverage</label>
           <select value={leverage} onChange={(e) => setLeverage(parseInt(e.target.value))}
                   style={{ width: 70 }}>
-            {[1, 2, 3, 5, 10, 20, 25, 50, 75, 100, 125].map((l) => (
-              <option key={l} value={l}>{l}×</option>
-            ))}
+            {/* Mereu include levierul curent al contului (ex. 150×) — altfel
+                <select> nu îl găsește în listă și afișează prima opțiune (1×). */}
+            {[...new Set([1, 2, 3, 5, 10, 20, 25, 50, 75, 100, 125, leverage])]
+              .filter(Boolean).sort((a, b) => a - b).map((l) => (
+                <option key={l} value={l}>{l}×</option>
+              ))}
           </select>
           <label>Margin</label>
           <select value={marginType} onChange={(e) => setMarginType(e.target.value)}
@@ -138,7 +141,9 @@ export default function TradePanel({
       <div className="row">
         <label>Intrare la preț</label>
         <input type="number" step="any" style={{ width: 90 }}
-               placeholder={ticker ? String(ticker.last) : 'preț'}
+               placeholder={ticker
+                 ? (filters?.pricePrecision != null ? ticker.last.toFixed(filters.pricePrecision) : String(ticker.last))
+                 : 'preț'}
                value={triggerPrice}
                onFocus={fillCurrentPrice}
                onChange={(e) => setTriggerPrice(e.target.value)} />

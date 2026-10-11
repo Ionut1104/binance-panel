@@ -92,6 +92,8 @@ export default function App() {
             setLeverageState(m.leverage);
             toast('ok', `⚡ Levier auto: ${m.leverage}×`, m.symbol);
           }
+          // Tipul de marjă REAL al contului pe acest simbol (nu "Isolated" presupus).
+          if (m.marginType) setMarginTypeState(m.marginType);
           break;
         case 'ticker': if (m.symbol === ref.current.symbol) setTicker(m); break;
         case 'account': setBalances(m.balances); setPosition(m.position); break;
@@ -306,7 +308,12 @@ export default function App() {
   const setLeverage = useCallback((l) => {
     setLeverageState(l);
     send('futures.leverage', { leverage: l })
-      .then(() => toast('ok', `Leverage ${l}×`))
+      .then((r) => {
+        // Binance poate plafona valoarea cerută → arătăm ce a setat efectiv.
+        const real = parseInt(r?.leverage, 10) || l;
+        if (real !== l) setLeverageState(real);
+        toast('ok', `Leverage ${real}×`);
+      })
       .catch((e) => toast('error', '✗ Leverage', e.message));
   }, [toast]);
 

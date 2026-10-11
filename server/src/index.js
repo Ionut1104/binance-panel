@@ -64,7 +64,7 @@ wss.on('connection', (ws, req) => {
   if (session) {
     ws.send(JSON.stringify({ type: 'status', status: session.status }));
     if (session.symbol) {
-      ws.send(JSON.stringify({ type: 'symbol', symbol: session.symbol, filters: session.filters[session.symbol], leverage: session.leverage }));
+      ws.send(JSON.stringify(session.symbolMessage()));
       ws.send(JSON.stringify({ type: 'account', balances: session.balances, position: { symbol: session.symbol, ...session.position } }));
       ws.send(JSON.stringify({ type: 'orders', orders: [...session.openOrders.values()] }));
       ws.send(JSON.stringify({ type: 'triggers', triggers: [...session.triggers.values()] }));
