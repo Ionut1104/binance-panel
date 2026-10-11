@@ -615,6 +615,13 @@ export class BinanceSession {
     return trigger;
   }
 
+  // Repune trigger-ele armate după o repornire a sesiunii (ex. "Salvează" în
+  // Setări) — doar pe cele ale simbolului activ.
+  restoreTriggers(list) {
+    for (const t of list) if (t.symbol === this.symbol) this.triggers.set(t.id, t);
+    this.#pushTriggers();
+  }
+
   cancelTrigger(id) {
     this.triggers.delete(id);
     this.#pushTriggers();

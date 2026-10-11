@@ -86,8 +86,15 @@ function broadcast(msg) {
   for (const c of clients) if (c.readyState === 1) c.send(raw);
 }
 
-// (Re)pornește sesiunea Binance cu setările curente.
+// (Re)pornește sesiunea Binance cu setările curente. Serverul alege și ține
+// simbolul activ (nu UI-ul): păstrează simbolul de dinainte și trigger-ele
+// armate dacă rămâi pe același cont și aceeași piață. Altfel ia favoritul #1.
 async function restartSession() {
+  const prev = session && {
+    symbol: session.symbol,
+    triggers: [...session.triggers.values()],
+    market: session.s.market, testnet: session.s.testnet, apiKey: session.s.apiKey,
+  };
   session?.stop();
   session = null;
   const s = loadSettings();
@@ -95,8 +102,23 @@ async function restartSession() {
     broadcast({ type: 'status', status: { wsApi: 'no-keys', market: 'no-keys', user: 'no-keys' } });
     return;
   }
-  session = new BinanceSession(s, broadcast);
-  await session.start();
+  const current = new BinanceSession(s, broadcast);
+  session = current;
+  await current.start();
+  if (session !== current) return;                 // repornită din nou între timp
+
+  const sameMarket = prev?.symbol && prev.market === s.market && prev.testnet === s.testnet;
+  const sameAccount = sameMarket && prev.apiKey === s.apiKey;
+  for (const sym of [sameMarket ? prev.symbol : null, s.favorites?.[0]].filter(Boolean)) {
+    try {
+      await current.setSymbol(sym);
+      if (sameAccount && sym === prev.symbol) current.restoreTriggers(prev.triggers);
+      break;
+    } catch (e) {
+      console.error(`[session] nu pot selecta ${sym}:`, e.message);
+    }
+  }
+  current.ready = true;
 }
 
 // ── Protocolul cu UI-ul: mesaje JSON { type, reqId, ...payload } ──
@@ -121,6 +143,10 @@ wss.on('connection', (ws, req) => {
       ws.send(JSON.stringify({ type: 'orders', orders: [...session.openOrders.values()] }));
       ws.send(JSON.stringify({ type: 'triggers', triggers: [...session.triggers.values()] }));
       if (session.ticker) ws.send(JSON.stringify({ type: 'ticker', ...session.ticker }));
+    } else if (session.ready) {
+      // Selectarea de la pornire a eșuat (ex. fără internet atunci) — reîncercăm.
+      const fav = loadSettings().favorites?.[0];
+      if (fav) session.setSymbol(fav).catch((e) => console.error(`[session] nu pot selecta ${fav}:`, e.message));
     }
   }
 

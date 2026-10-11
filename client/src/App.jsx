@@ -78,12 +78,11 @@ export default function App() {
         case 'status': setStatus(m.status); break;
         case 'settings':
           setSettings(m.settings);
-          // După (re)conectare cerem lista de simboluri + selectăm primul favorit.
-          if (m.settings.hasKeys) {
-            send('symbols.list').then(setSymbols).catch(() => {});
-            const fav = m.settings.favorites?.[0];
-            if (fav && !ref.current.symbol) send('symbol.set', { symbol: fav }).catch(() => {});
-          }
+          // După (re)conectare cerem lista de simboluri pentru căutare. Simbolul
+          // activ îl alege și îl ține serverul (vine imediat în mesajul 'symbol') —
+          // dacă l-am alege aici, un simplu refresh al paginii ar muta panelul pe
+          // favoritul #1 și ar șterge trigger-ele armate.
+          if (m.settings.hasKeys) send('symbols.list').then(setSymbols).catch(() => {});
           break;
         case 'symbol':
           setSymbol(m.symbol); setFilters(m.filters); setPendingOrders([]); setTriggers([]);
