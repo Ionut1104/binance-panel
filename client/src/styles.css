@@ -1,0 +1,189 @@
+/* Dark mode compact — totul pe un ecran, fără scroll. */
+:root {
+  --bg: #0b0e14;
+  --panel: #131722;
+  --panel2: #1a2030;
+  --border: #262c3d;
+  --text: #d6dbe8;
+  --muted: #7a8299;
+  --green: #16c784;
+  --green-dk: #0e8a5c;
+  --red: #ea3943;
+  --red-dk: #a5262d;
+  --amber: #f0b90b;
+  --blue: #3861fb;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.35 -apple-system, 'Segoe UI', Roboto, sans-serif;
+  overflow: hidden; /* fără scroll — layout-ul încape în viewport */
+  user-select: none;
+}
+
+.app {
+  display: grid;
+  height: 100vh;
+  padding: 6px;
+  gap: 6px;
+  grid-template-rows: auto auto 1fr;
+  grid-template-columns: 1.2fr 1fr;
+  grid-template-areas:
+    'top top'
+    'panel pos'
+    'panel orders';
+}
+.topbar { grid-area: top; }
+.tradepanel { grid-area: panel; }
+.poscard { grid-area: pos; }
+.orders { grid-area: orders; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── Top bar: simbol, preț, status, setări ── */
+.topbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.symsearch { position: relative; }
+.symsearch input {
+  background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+  padding: 7px 10px; border-radius: 6px; width: 150px; font-size: 14px; outline: none;
+}
+.symsearch input:focus { border-color: var(--blue); }
+.sugg {
+  position: absolute; top: 100%; left: 0; z-index: 50; width: 220px; max-height: 300px;
+  overflow-y: auto; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+}
+.sugg div { padding: 6px 10px; cursor: pointer; }
+.sugg div:hover, .sugg div.sel { background: var(--blue); color: #fff; }
+
+.fav { display: flex; gap: 4px; }
+.fav button {
+  background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 8px; cursor: pointer; font-size: 12px;
+}
+.fav button.active { color: #fff; border-color: var(--amber); }
+.fav button .num { color: var(--amber); margin-right: 4px; font-weight: 700; }
+
+.price { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.price .ba { font-size: 11px; color: var(--muted); display: block; }
+
+.status { display: flex; gap: 6px; margin-left: auto; align-items: center; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 3px; }
+.dot.connected { background: var(--green); }
+.dot.reconnecting { background: var(--amber); animation: blink 0.8s infinite; }
+.dot.disconnected, .dot.no-keys { background: var(--red); }
+@keyframes blink { 50% { opacity: 0.3; } }
+.status .lbl { font-size: 11px; color: var(--muted); }
+
+.badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: 700; }
+.badge.testnet { background: var(--amber); color: #000; }
+.badge.live { background: var(--red); color: #fff; }
+.badge.market { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+
+/* ── Trade panel ── */
+.tradepanel { display: flex; flex-direction: column; gap: 8px; }
+.row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.row label { font-size: 11px; color: var(--muted); }
+.row input[type='number'], .row input[type='text'], .row select {
+  background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+  padding: 6px 8px; border-radius: 6px; width: 100px; font-size: 14px; outline: none;
+}
+.presets button, .minibtn {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px;
+}
+.presets button:hover, .minibtn:hover { border-color: var(--blue); }
+
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; flex: 1; min-height: 0; }
+.btn {
+  position: relative; border: none; border-radius: 8px; cursor: pointer;
+  font-size: 15px; font-weight: 700; color: #fff; padding: 10px 6px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  transition: filter 0.06s;
+}
+.btn:hover { filter: brightness(1.15); }
+.btn:active { filter: brightness(0.85); transform: scale(0.99); }
+.btn .hk {
+  font-size: 10px; font-weight: 400; opacity: 0.75;
+  background: rgba(0,0,0,0.35); border-radius: 4px; padding: 1px 5px;
+}
+.btn.buy { background: var(--green-dk); }
+.btn.sell { background: var(--red-dk); }
+.btn.neutral { background: var(--panel2); border: 1px solid var(--border); color: var(--text); }
+.btn.warn { background: #6b5311; }
+.btn.kill {
+  background: var(--red); font-size: 18px; letter-spacing: 1px;
+  grid-column: 1 / -1; box-shadow: 0 0 12px rgba(234, 57, 67, 0.4);
+}
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Position card ── */
+.poscard .big { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.poscard table { width: 100%; font-variant-numeric: tabular-nums; }
+.poscard td { padding: 2px 4px; }
+.poscard td:first-child { color: var(--muted); font-size: 11px; }
+.pos { color: var(--green); }
+.neg { color: var(--red); }
+.side-long { color: var(--green); font-weight: 700; }
+.side-short { color: var(--red); font-weight: 700; }
+
+/* ── Orders ── */
+.orders { display: flex; flex-direction: column; }
+.orders h3 { font-size: 11px; color: var(--muted); text-transform: uppercase; margin-bottom: 4px; }
+.orders .tbl { overflow-y: auto; flex: 1; }
+.orders table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 12px; }
+.orders th { text-align: left; color: var(--muted); font-size: 10px; padding: 2px 4px; position: sticky; top: 0; background: var(--panel); }
+.orders td { padding: 3px 4px; border-top: 1px solid var(--border); }
+.orders .cancel {
+  background: none; border: 1px solid var(--border); color: var(--red);
+  border-radius: 4px; cursor: pointer; padding: 1px 6px; font-size: 11px;
+}
+.orders tr.pending-row { opacity: 0.55; font-style: italic; }
+.orders tr.trigger-row { background: rgba(255, 200, 0, 0.06); }
+.orders tr.trigger-row td:first-child { border-left: 2px solid #b58900; }
+
+/* ── Toasts (feedback vizual ordine) ── */
+.toasts { position: fixed; bottom: 12px; right: 12px; display: flex; flex-direction: column; gap: 6px; z-index: 100; }
+.toast {
+  padding: 10px 14px; border-radius: 8px; font-weight: 600; min-width: 240px;
+  animation: slidein 0.15s ease-out; border-left: 4px solid transparent;
+  background: var(--panel2); box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+.toast.ok { border-color: var(--green); }
+.toast.fill { border-color: var(--green); background: #0e2b1f; }
+.toast.error { border-color: var(--red); background: #2b0e10; }
+.toast.info { border-color: var(--blue); }
+.toast .sub { font-size: 11px; color: var(--muted); font-weight: 400; }
+@keyframes slidein { from { transform: translateX(40px); opacity: 0; } }
+
+/* ── Modal setări ── */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 90;
+  display: flex; align-items: center; justify-content: center;
+}
+.modal {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 16px; width: 520px; max-height: 90vh; overflow-y: auto;
+}
+.modal h2 { font-size: 15px; margin-bottom: 10px; }
+.modal .frow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.modal .frow label { width: 170px; color: var(--muted); font-size: 12px; }
+.modal .frow input, .modal .frow select {
+  flex: 1; background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+  padding: 6px 8px; border-radius: 6px; outline: none;
+}
+.modal .section { border-top: 1px solid var(--border); margin: 12px 0 8px; padding-top: 8px; font-size: 11px; color: var(--amber); text-transform: uppercase; }
+.modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.modal .save { background: var(--blue); color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+
+.switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: var(--muted); }
+.hkinput { width: 110px !important; text-align: center; }
