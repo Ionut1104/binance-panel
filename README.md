@@ -77,6 +77,8 @@ On Windows, `start-panel.bat` starts the server and opens the browser.
 - `server/.env` and `server/data/` hold your secret and encrypted keys — they are git-ignored. **Never commit them.**
 - The server listens on `127.0.0.1` only, so other devices on your network can't reach it. Use an SSH tunnel to reach it on a VPS.
 - The trading WebSocket rejects connections from other websites (Origin check), so a malicious page open in your browser can't place orders through the panel. Extra origins (e.g. a reverse proxy) must be listed in `ALLOWED_ORIGINS`.
+- The UI can't be embedded in another site's iframe (`X-Frame-Options: DENY` + CSP `frame-ancestors 'none'`), which blocks clickjacking. A strict Content-Security-Policy allows only the panel's own scripts and connections.
+- Malformed or oversized WebSocket messages close that connection instead of crashing the server.
 - If you expose the port anyway, set `PANEL_TOKEN` and keep it behind an SSH tunnel/VPN.
 - The panel enforces `maxOrderUsd` / `maxPositionUsd` server-side before every order. It has no withdrawal code at all.
 

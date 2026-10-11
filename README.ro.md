@@ -153,6 +153,8 @@ Apoi deschide <http://localhost:8787> — panelul rulează în Tokyo, tu doar î
 ### Securitate implicită
 - Serverul ascultă doar pe `127.0.0.1`: alte dispozitive din rețea (Wi-Fi, LAN) nu ajung la panel.
 - WebSocket-ul de trading respinge conexiunile venite de pe alte site-uri (verificare `Origin`). Un site rău-intenționat deschis în browser nu poate trimite ordine prin panel.
+- Panelul nu poate fi încărcat într-un iframe pe alt site (anti-clickjacking), iar politica CSP permite doar scripturile și conexiunile proprii.
+- Mesajele malformate sau prea mari închid doar conexiunea respectivă, nu opresc serverul.
 - Panelul nu are cod de retragere (withdraw). Cheia API trebuie creată fără permisiunea de Withdrawals.
 
 ### 6.4 Pe Live, restricționează cheia API la IP-ul static al instanței (alocă un Elastic IP).

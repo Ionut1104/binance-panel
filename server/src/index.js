@@ -15,6 +15,11 @@ import { NO_COMPRESSION, noDelayOnSocket, extendRestKeepAlive } from './lowLaten
 
 extendRestKeepAlive();
 
+// Plasă de siguranță: o promisiune respinsă și neprinsă (ex. o eroare de rețea
+// rară) ar opri implicit tot procesul în Node.js — și odată cu el trigger-ele
+// active. O logăm și mergem mai departe.
+process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e?.message || e));
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 8787;
 // Implicit ascultăm DOAR pe interfața locală — panelul nu e accesibil din
@@ -41,12 +46,30 @@ function originAllowed(origin) {
 }
 
 const app = express();
+app.disable('x-powered-by');
+// Headere de securitate. Cel mai important: panelul NU poate fi încărcat într-un
+// iframe de alt site (anti-clickjacking) — altfel o pagină rău-intenționată l-ar
+// putea pune invizibil peste propriile butoane și te-ar păcăli să dai click pe
+// BUY/SELL (butoanele execută la mousedown). CSP: doar scripturi/stiluri proprii,
+// conexiuni doar către propriul server.
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data:",
+    "connect-src 'self'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'none'", "object-src 'none'",
+  ].join('; '));
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
 // Servim build-ul React din client/dist (după `npm run build` în client/).
 app.use(express.static(path.join(__dirname, '..', '..', 'client', 'dist')));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({
   server, path: '/ws', ...NO_COMPRESSION,
+  maxPayload: 64 * 1024,               // comenzile UI au < 1 KB; refuzăm mesaje uriașe
+
   verifyClient: ({ origin }) => {
     const ok = originAllowed(origin);
     if (!ok) console.warn(`[security] conexiune WebSocket respinsă de la origin străin: ${origin}`);
@@ -102,10 +125,15 @@ wss.on('connection', (ws, req) => {
   }
 
   ws.on('close', () => clients.delete(ws));
+  // Un mesaj malformat sau prea mare emite 'error' pe socket — fără handler,
+  // Node.js ar opri TOT serverul (inclusiv trigger-ele active). Închidem doar
+  // conexiunea respectivă; `ws` o termină singur după eroare.
+  ws.on('error', (e) => console.warn('[ws] conexiune închisă:', e.code || e.message));
 
   ws.on('message', async (raw) => {
     let m;
     try { m = JSON.parse(raw.toString()); } catch { return; }
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return;   // ex. "null", "123", "[]"
     const reply = (obj) => ws.send(JSON.stringify(obj));
     const ok = (result) => reply({ type: 'ack', reqId: m.reqId, action: m.type, result });
     const fail = (e) => reply({
