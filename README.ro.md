@@ -2,6 +2,9 @@
 
 Panel single-page (React) + backend Node.js care execută ordine prin **Binance WebSocket API** (conexiune persistentă, nu REST) pentru latență minimă. Spot + Futures USDT-M, Testnet + Live.
 
+![Binance Panel: poziție long pe BTCUSDT cu stop loss, take profit, un ordin limit în așteptare și un trigger de breakout armat](docs/screenshot.png)
+<sub>Captură pe o bursă simulată (badge Testnet), fără date reale de cont.</sub>
+
 > ⚠️ **Disclaimer**: unealtă de execuție, nu sfat de investiții. Testeaz-o serios pe Testnet înainte de orice ban real. Tradingul cu leverage poate lichida contul.
 
 ---
@@ -173,6 +176,9 @@ server/src/
   crypto.js       # AES-256-GCM + semnătura HMAC
   settings.js     # setări persistate criptat
   endpoints.js    # URL-urile Binance (spot/futures × testnet/live)
+server/test/
+  mock-exchange.mjs     # bursă Binance Futures simulată (REST + WS-API + stream-uri)
+  integration.test.mjs  # 36 de teste pe codul real al sesiunii (`npm test`)
 client/src/
   App.jsx         # starea globală, act() = dispatcher acțiuni, UI optimist
   ws.js           # WebSocket către backend, reconnect + request/response
@@ -181,6 +187,23 @@ client/src/
   components/     # TradePanel, PositionCard, OrdersTable, SymbolBar,
                   # SettingsModal, StatusBar, Toasts
 ```
+
+### Teste
+```bash
+cd server
+npm test
+```
+36 de teste de integrare rulează logica reală de trading (`session.js`) pe o bursă Binance Futures simulată: fără chei, fără bani, fără rețea. Acoperă execuția și limitele de risc, SL/TP prin Algo Order API, SL automat (inclusiv cursa fill-înainte-de-ack), trigger-ele, conturile fără evenimente pe user stream (fallback REST), rotunjirile și reconectarea.
+
+### Performanță (măsurată din România)
+| Pas | Timp |
+|---|---|
+| Overhead-ul panelului (browser → backend → browser) | **< 0,1 ms** |
+| Dus-întors până la Binance Futures pe WebSocket API | ~243 ms |
+| Ordinul MARKET ajunge la bursă după click | **~120 ms** |
+| Confirmarea fill-ului vizibilă în panel | ~245 ms |
+
+Aproape tot timpul e distanța până la serverele Binance din Tokyo; pe un VPS în Tokyo (§6) dus-întorsul scade la câteva milisecunde.
 
 ## 8. Limitări cunoscute
 

@@ -2,6 +2,9 @@
 
 A single-page trading panel (React) with a Node.js backend that sends orders over a **persistent, authenticated Binance WebSocket API connection** instead of per-request REST. Built for fast, keyboard-driven manual execution on **USDT-M Futures** (and Spot), on **Testnet or Live**.
 
+![Binance Panel: a BTCUSDT long with stop loss, take profit, a resting limit order and an armed breakout trigger](docs/screenshot.png)
+<sub>Screenshot taken against a simulated exchange (Testnet badge), no real account data.</sub>
+
 > ⚠️ **Disclaimer** — This is an execution tool, not financial advice. Leveraged trading can liquidate your account. Test thoroughly on Testnet and start with small size on Live.
 
 ## Highlights
@@ -13,7 +16,7 @@ A single-page trading panel (React) with a Node.js backend that sends orders ove
 - **Optional auto Stop Loss** on entry (off by default) computed from the real average fill price.
 - **Auto max leverage per symbol** — queries your account's leverage brackets on symbol change.
 - **Safety rails** — server-side max USD per order / per position, tick-size & step-size rounding, serialized position-changing operations, and a "close all" that re-reads the real position and retries until flat.
-- **Optimistic UI** — instant feedback and sounds on click; fills/rejects reconcile by `clientOrderId` from the user data stream.
+- **Optimistic UI** — instant feedback and sounds on click; fills/rejects reconcile by `clientOrderId` from the user data stream, with a REST fallback for accounts that receive no stream events.
 - **Encrypted key storage** — API keys are stored on disk with AES-256-GCM (key derived from your `PANEL_SECRET` via scrypt).
 
 ## Architecture
@@ -27,6 +30,20 @@ Browser (React) ──WebSocket──▶ Node backend ──┬─▶ Binance WS
 
 - `client/` — React + Vite UI
 - `server/` — Express static host + WebSocket server + Binance connections (`session.js` holds trading logic and risk checks)
+- `server/test/` — integration tests against a simulated exchange
+
+## Performance
+
+Measured from a home connection in Romania:
+
+| Step | Time |
+|---|---|
+| Panel overhead (browser → backend → browser) | **< 0.1 ms** |
+| Round trip to Binance Futures over the WebSocket API (warm connection) | ~243 ms |
+| Market order reaches the exchange after the click | **~120 ms** (about half the round trip) |
+| Fill confirmation visible in the panel | ~245 ms |
+
+Almost all of it is the physical distance to Binance's servers in Tokyo. Running the backend on a VPS in Tokyo should bring the round trip down to a few milliseconds. Close all, partial close, scale and SL/TP re-read the real position over REST first, so they take about two extra round trips.
 
 ## Quick start
 
@@ -71,6 +88,15 @@ On Windows, `start-panel.bat` starts the server and opens the browser.
 | `L` / `T` | Stop loss / Take profit | `R` | Reverse |
 | `K` | Kill / flatten all | `X` | Cancel all |
 | `1`–`9` | Favorite symbols | `Q` | Focus symbol search |
+
+## Testing
+
+```bash
+cd server
+npm test
+```
+
+36 integration tests run the real trading logic (`session.js`) against a simulated Binance Futures exchange (`server/test/mock-exchange.mjs`), with no keys, no money and no network access. They cover order execution and risk limits, SL/TP through the Algo Order API, auto stop loss (including the fill-before-ack race), price triggers, accounts without user-stream events (REST fallback), rounding edge cases and reconnection.
 
 ## Security notes
 
