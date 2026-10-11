@@ -1,7 +1,7 @@
 {
   "name": "binance-panel-server",
   "version": "1.0.0",
-  "description": "Backend pentru panel de trading manual Binance (stil DAS Trader)",
+  "description": "Backend pentru panel de trading manual Binance",
   "type": "module",
   "main": "src/index.js",
   "scripts": {

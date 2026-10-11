@@ -1,4 +1,4 @@
-# Binance Panel — trading manual rapid, stil DAS Trader
+# Binance Panel — trading manual rapid
 
 Panel single-page (React) + backend Node.js care execută ordine prin **Binance WebSocket API** (conexiune persistentă, nu REST) pentru latență minimă. Spot + Futures USDT-M, Testnet + Live.
 

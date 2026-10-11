@@ -1,4 +1,4 @@
-// Grid-ul de butoane de execuție — inima panelului, stil DAS Trader.
+// Grid-ul de butoane de execuție — inima panelului.
 // Fiecare buton afișează hotkey-ul lui. Toate acțiunile trec prin act().
 import React from 'react';
 import { comboLabel } from '../hotkeys.js';
