@@ -81,7 +81,7 @@ La fiecare schimbare de simbol (căutare, click pe favorit, `1`–`9`), panelul 
 
 De ce contează pentru sizing: câmpul **Size** e mereu o valoare **notional** (expunere totală), nu marjă — la Size fix (ex. 500 USDT), marja reală blocată din balanță e `notional / leverage`. Cu levierul mereu la maximul permis, orice poziție de 500 USDT folosește automat marja minimă posibilă pentru acea sumă, fără să calculezi tu nimic.
 
-> ⚠️ **Limitare cunoscută pe Futures Testnet**: la data scrierii, `testnet.binancefuture.com` respinge orice ordin `STOP_MARKET`/`TAKE_PROFIT_MARKET` cu eroarea `-4120 "Order type not supported for this endpoint"`, indiferent de parametri (verificat direct cu `/fapi/v1/order/test`, în afara panelului). E o restricție de pe partea Binance testnet, nu un bug al panelului — pe **Live** funcționează normal, la fel cum funcționau deja butoanele SL/TP existente înainte de această schimbare.
+> ⚠️ **SL/TP pe Futures = Algo Order API**: din 2025-12-09 Binance acceptă ordinele condiționale (`STOP_MARKET`, `TAKE_PROFIT_MARKET` etc.) doar prin `POST /fapi/v1/algoOrder`; endpoint-ul clasic și WS-API le resping cu `-4120`. Panelul folosește endpoint-ul Algo (testat pe Live). Futures Testnet s-ar putea să nu le accepte — validează SL/TP pe Live, cu o sumă mică.
 
 ## 5. Arhitectură (pe scurt)
 
@@ -148,7 +148,12 @@ ssh -i cheia-ta.pem -N -L 8787:localhost:8787 ubuntu@IP_INSTANTA
 
 Apoi deschide <http://localhost:8787> — panelul rulează în Tokyo, tu doar îl comanzi. Ordinele pleacă din Tokyo către Binance (rapid); doar click-urile tale traversează oceanul.
 
-> Dacă vrei acces fără tunel, pune un reverse proxy (Caddy/nginx) cu HTTPS + setează `PANEL_TOKEN` în `.env` și salvează-l în browser cu `localStorage.setItem('panelToken','...')` în consolă. Tunelul SSH rămâne varianta cea mai sigură.
+> Dacă vrei acces fără tunel, pune un reverse proxy (Caddy/nginx) cu HTTPS + setează `PANEL_TOKEN` și `ALLOWED_ORIGINS=https://domeniul-tau` în `.env`, apoi salvează token-ul în browser cu `localStorage.setItem('panelToken','...')` în consolă. Tunelul SSH rămâne varianta cea mai sigură.
+
+### Securitate implicită
+- Serverul ascultă doar pe `127.0.0.1`: alte dispozitive din rețea (Wi-Fi, LAN) nu ajung la panel.
+- WebSocket-ul de trading respinge conexiunile venite de pe alte site-uri (verificare `Origin`). Un site rău-intenționat deschis în browser nu poate trimite ordine prin panel.
+- Panelul nu are cod de retragere (withdraw). Cheia API trebuie creată fără permisiunea de Withdrawals.
 
 ### 6.4 Pe Live, restricționează cheia API la IP-ul static al instanței (alocă un Elastic IP).
 
@@ -161,7 +166,7 @@ server/src/
   wsApi.js        # conexiunea WS-API Binance (ordine, latență minimă)
   marketStream.js # preț live (bookTicker) + resubscribe la schimbare simbol
   userStream.js   # fill-uri / balanță / poziție (listenKey)
-  rest.js         # REST doar pentru: listenKey, leverage, exchangeInfo
+  rest.js         # REST: listenKey, leverage, exchangeInfo, SL/TP (Algo API), fallback poziție/ordine
   timeSync.js     # sincronizare ceas Binance (evită eroarea -1021)
   crypto.js       # AES-256-GCM + semnătura HMAC
   settings.js     # setări persistate criptat
@@ -180,4 +185,6 @@ client/src/
 - Pe **Spot** nu există short și nici "poziție" nativă — entry-ul e reconstruit local din fill-uri (se pierde la restart de server; poziția ca mărime rămâne corectă din balanță).
 - **Reverse** pe Spot doar închide poziția (nu poate deschide short).
 - Futures e presupus în **One-way mode** (nu Hedge mode) — setarea implicită Binance.
+- Pe unele conturi Binance nu trimite evenimente pe user stream; panelul trece automat pe citire REST (poziție, ordine, fill-uri la ~3s).
+- Trigger-ele de preț stau în memoria serverului — se pierd la repornire (ordinele reale rămân pe Binance).
 - Endpoint-urile Binance se mai schimbă; dacă ceva nu se conectează, verifică `server/src/endpoints.js` față de docs.

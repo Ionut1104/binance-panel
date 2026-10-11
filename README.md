@@ -75,13 +75,15 @@ On Windows, `start-panel.bat` starts the server and opens the browser.
 ## Security notes
 
 - `server/.env` and `server/data/` hold your secret and encrypted keys — they are git-ignored. **Never commit them.**
-- The backend only needs to be reachable from your own machine. If you expose it, set `PANEL_TOKEN` and keep the port behind an SSH tunnel/VPN.
-- The panel enforces `maxOrderUsd` / `maxPositionUsd` server-side before every order.
+- The server listens on `127.0.0.1` only, so other devices on your network can't reach it. Use an SSH tunnel to reach it on a VPS.
+- The trading WebSocket rejects connections from other websites (Origin check), so a malicious page open in your browser can't place orders through the panel. Extra origins (e.g. a reverse proxy) must be listed in `ALLOWED_ORIGINS`.
+- If you expose the port anyway, set `PANEL_TOKEN` and keep it behind an SSH tunnel/VPN.
+- The panel enforces `maxOrderUsd` / `maxPositionUsd` server-side before every order. It has no withdrawal code at all.
 
 ## Known limitations
 
-- **Futures Testnet rejects `STOP_MARKET` / `TAKE_PROFIT_MARKET`** (error `-4120`). SL/TP can only be validated on Live.
-- **Auto SL depends on fill events from the user data stream.** On accounts where Binance does not deliver those events, the auto SL times out (manual SL/TP buttons are unaffected — they read the position over REST).
+- **Futures Testnet may reject conditional orders** (SL/TP go through Binance's Algo Order API, `/fapi/v1/algoOrder`). Validate SL/TP on Live with a small size.
+- **Some accounts receive no user data stream events.** The panel falls back to REST polling for position, open orders and fills, so it keeps working, with updates every ~3s.
 - Price-trigger entries live in the backend's memory (they are not exchange-side orders) and are lost if the server restarts.
 - Hedge mode (`positionSide`) is not implemented.
 - Balance display uses the symbol's quote asset; on Multi-Assets-Mode accounts your collateral may be held in another asset (e.g. USDC).

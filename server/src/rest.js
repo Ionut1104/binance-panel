@@ -1,7 +1,7 @@
 // Helper REST — folosit pentru operațiuni care nu sunt pe WS-API:
-// listenKey, leverage, margin type, exchangeInfo, poziții inițiale, și
-// ordinele STOP_MARKET/TAKE_PROFIT_MARKET pe futures (WS-API le respinge cu
-// -4120, vezi placeOrder în session.js). Restul ordinelor merg pe WS-API
+// listenKey, leverage, margin type, exchangeInfo, snapshot cont/ordine, și
+// SL/TP pe futures (POST /fapi/v1/algoOrder — WS-API le respinge cu -4120,
+// vezi placeOrder în session.js). Restul ordinelor merg pe WS-API
 // (wsApi.js) pentru latență minimă.
 import { hmacSign } from './crypto.js';
 import { now } from './timeSync.js';

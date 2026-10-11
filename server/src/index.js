@@ -17,13 +17,42 @@ extendRestKeepAlive();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 8787;
+// Implicit ascultăm DOAR pe interfața locală — panelul nu e accesibil din
+// rețea (Wi-Fi, LAN). Pe un VPS, accesul se face prin tunel SSH (tot local).
+const HOST = process.env.HOST || '127.0.0.1';
+
+// Cine are voie să deschidă WebSocket-ul (= să tranzacționeze). Fără verificarea
+// asta, ORICE site deschis în browser ar putea face `new WebSocket('ws://localhost:8787/ws')`
+// și trimite ordine în numele tău (browserul nu blochează WebSocket-uri cross-site).
+// Permitem doar pagini servite de pe localhost (panelul însuși, Vite dev pe :5173)
+// + ce adaugi explicit în ALLOWED_ORIGINS (ex. un reverse proxy cu HTTPS).
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+const EXTRA_ORIGINS = new Set((process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean));
+function originAllowed(origin) {
+  // Fără Origin = nu e un browser (ex. script local). Accesul din rețea e deja
+  // închis de HOST=127.0.0.1, iar pe un VPS expus rămâne și PANEL_TOKEN.
+  if (!origin) return true;
+  if (EXTRA_ORIGINS.has(origin)) return true;
+  try {
+    return LOOPBACK.has(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
 
 const app = express();
 // Servim build-ul React din client/dist (după `npm run build` în client/).
 app.use(express.static(path.join(__dirname, '..', '..', 'client', 'dist')));
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws', ...NO_COMPRESSION });
+const wss = new WebSocketServer({
+  server, path: '/ws', ...NO_COMPRESSION,
+  verifyClient: ({ origin }) => {
+    const ok = originAllowed(origin);
+    if (!ok) console.warn(`[security] conexiune WebSocket respinsă de la origin străin: ${origin}`);
+    return ok;
+  },
+});
 
 let session = null;          // sesiunea Binance activă (una singură)
 const clients = new Set();   // UI-urile conectate
@@ -169,8 +198,8 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`[server] Panel pornit pe http://localhost:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`[server] Panel pornit pe http://localhost:${PORT} (ascultă pe ${HOST})`);
   // Pornim sesiunea la boot dacă avem deja chei salvate.
   restartSession().catch((e) => console.error('[session]', e.message));
 });
